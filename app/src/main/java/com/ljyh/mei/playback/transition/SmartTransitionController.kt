@@ -81,13 +81,28 @@ internal class SmartTransitionController(
     private var mixSession: AutoMixSession? = null
     private var beatSources: Pair<Uri, Uri>? = null
     private var failedMixPair: String? = null
-    val isTransitioning: Boolean get() = fade != null || mixSession?.isStarted == true
+    val isTransitioning: Boolean
+        get() = fade != null || mixSession?.isStarted == true ||
+            SystemClock.elapsedRealtime() < promoteGuardUntil
+
+    /**
+     * 交接后的一小段保护窗口。
+     *
+     * [com.ljyh.mei.playback.MusicService.onEvents] 用 `isTransitioning` 决定要不要
+     * 调 `pauseSmooth()`。会话在 handback 时 `isStarted` 已经是 false、`fade` 也是 null，
+     * 于是 promote 瞬间的 `PLAY_WHEN_READY_CHANGED` / `PLAYBACK_STATE_CHANGED` 会被
+     * 当成「普通暂停」，把音量淡到 0 —— 表现就是切歌时突然没声。
+     * 所以交接后 2.5 秒内仍然报告为过渡中，让 MusicService 不要插手音量。
+     */
+    @Volatile
+    private var promoteGuardUntil = 0L
 
     private val preferenceJob: Job = scope.launch {
         context.dataStore.data.collectLatest { prefs ->
             val previousMode = settings.mode
             settings = Settings(
-                enabled = (prefs[SmartTransitionEnabledKey] ?: false) && !(prefs[UsbExclusivePlaybackKey] ?: false),
+                // USB 独占已从本构建中移除：不再因为 USB 输出而禁用过渡。
+                enabled = prefs[SmartTransitionEnabledKey] ?: false,
                 mode = runCatching { SmartTransitionMode.valueOf(prefs[SmartTransitionModeKey] ?: "Smart") }
                     .getOrDefault(SmartTransitionMode.Smart),
                 fixedMs = (prefs[SmartTransitionDurationKey] ?: 6).coerceIn(2, 12) * 1_000L,
@@ -500,12 +515,19 @@ internal class SmartTransitionController(
         incoming.volume = 1f
         incoming.playbackParameters = PlaybackParameters(speed)
         incoming.playWhenReady = outgoing.playWhenReady
+        promoteGuardUntil = SystemClock.elapsedRealtime() + 2_500L
         decks.promote()
         runCatching {
             outgoing.stop()
             outgoing.clearMediaItems()
             outgoing.setPauseAtEndOfMediaItems(false)
             outgoing.volume = 0f
+        }
+        // promote() 之后主动确认一次播放：incoming 可能在混音期间被 seek 到缓冲态，
+        // 这里把音量与播放态钉定，避免被其它组件（音量平滑/音频焦点）淡掉。
+        runCatching {
+            incoming.volume = 1f
+            if (outgoing.playWhenReady) incoming.play()
         }
         mixSession = null
         fade = null

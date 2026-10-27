@@ -155,7 +155,9 @@ class MusicService : MediaLibraryService(),
     private val standbyLimiterProcessor = SoftLimiterProcessor()
     private val firstTransitionProbe = TransitionAudioProbe()
     private val secondTransitionProbe = TransitionAudioProbe()
-    @Volatile private var usbExclusiveEnabled = false
+    // USB 独占播放已移除：强制关闭，不再参与输出选择。
+    @Volatile
+    private var usbExclusiveEnabled = false
     @Volatile private var usbPreferences = UsbPlaybackPreferences()
     private lateinit var usbKeepAlive: UsbFloatingKeepAlive
     private lateinit var usbManager: UsbManager
@@ -218,7 +220,7 @@ class MusicService : MediaLibraryService(),
     override fun onCreate() {
         super.onCreate()
         val usbInitialSettings = runBlocking { dataStore.data.first() }
-        usbExclusiveEnabled = usbInitialSettings[UsbExclusivePlaybackKey] ?: false
+        usbExclusiveEnabled = false // USB 独占已移除，忽略旧偏好
         usbPreferences = usbInitialSettings.usbPlaybackPreferences()
         usbManager = getSystemService(UsbManager::class.java)
         usbDevices = connectedUsbDevices()
@@ -333,8 +335,11 @@ class MusicService : MediaLibraryService(),
         scope.launch {
             dataStore.data.map { (it[UsbExclusivePlaybackKey] ?: false) to it.usbPlaybackPreferences() }
                 .distinctUntilChanged()
-                .collect { (enabled, settings) ->
-                    val reconfigure = enabled != usbExclusiveEnabled || (enabled && settings.formatPolicy() != usbPreferences.formatPolicy())
+                .collect { (prefEnabled, settings) ->
+                    // USB 独占已从本构建移除：保持关闭，也不再因为旧偏好去重配输出。
+                    usbPreferences = settings
+                    val reconfigure = false
+                    @Suppress("UNUSED_EXPRESSION") prefEnabled
                     usbPreferences = settings
                     usbExclusiveEnabled = enabled
                     usbKeepAlive.update()

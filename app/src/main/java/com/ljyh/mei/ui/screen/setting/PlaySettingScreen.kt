@@ -118,12 +118,6 @@ fun PlaySettingScreen(
 
             PreferenceSection("音频输出") {
                 PreferenceEntry(
-                    title = { Text("USB 独占播放") },
-                    description = if (usbExclusive) usbStatus.message.ifEmpty { "已开启" } else "已关闭 · 输出、缓冲与后台运行设置",
-                    icon = { Icon(Icons.Rounded.Usb, null) },
-                    onClick = { Screen.UsbExclusiveSettings.navigate(navController) },
-                )
-                PreferenceEntry(
                     title = { Text("均衡器与音效") },
                     description = if (usbExclusive) "USB 独占播放时不可用" else "参数均衡器、频响曲线与预设",
                     icon = { Icon(Icons.Rounded.Equalizer, null) },
