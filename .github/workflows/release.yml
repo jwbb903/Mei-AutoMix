@@ -62,6 +62,16 @@ jobs:
           rustup default 1.97.0
           rustup target add aarch64-linux-android
 
+      - name: Warm cargo registry (CMake builds with --offline)
+        working-directory: app/src/main/rust/mei-usb-core
+        run: |
+          # MeiUsbRust.cmake 里 cargo 固定用 --offline --locked，所以先把依赖
+          # （目前只有 jni-sys）预取到 registry 缓存，否则 CI 上会报
+          # "no matching package named jni-sys found"。
+          export CARGO_NET_GIT_FETCH_WITH_CLI=true
+          cargo fetch --locked
+          cargo fetch --locked --target aarch64-linux-android
+
       - name: Decode signing keystore
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
