@@ -1,0 +1,75 @@
+package com.ljyh.mei.playback.equalizer
+
+import android.content.Context
+import com.ljyh.mei.constants.EqualizerBandLevelsKey
+import com.ljyh.mei.constants.OutputLimiterEnabledKey
+import com.ljyh.mei.constants.EqualizerEnabledKey
+import com.ljyh.mei.constants.ParametricEqualizerProfileKey
+import com.ljyh.mei.constants.ReverbProfileKey
+import com.ljyh.mei.playback.equalizer.EqFilter
+import com.ljyh.mei.playback.equalizer.EqualizerProfile
+import com.ljyh.mei.playback.equalizer.EqualizerProfileCodec
+import com.ljyh.mei.playback.equalizer.FilterType
+import com.ljyh.mei.playback.equalizer.ParametricEqualizerProcessor
+import com.ljyh.mei.utils.preferences.dataStore
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.launch
+
+/** Keeps playback DSP configuration in sync with the editor and migrates the earlier 5-band EQ. */
+class AudioEffectsController(
+    context: Context,
+    scope: CoroutineScope,
+    private val processor: ParametricEqualizerProcessor,
+    private val reverb: FreeverbProcessor? = null,
+    private val limiter: SoftLimiterProcessor? = null,
+) {
+    private var savedProfile: EqualizerProfile = EqualizerProfile(
+        presetId = "flat",
+    )
+    private var autoProfile: EqualizerProfile? = null
+
+    /** Per-song profile from auto EQ; null restores the user's saved profile. */
+    @Synchronized
+    fun setAutoProfile(profile: EqualizerProfile?) {
+        autoProfile = profile
+        processor.setProfile(effectiveProfile())
+    }
+
+    /** Auto EQ supplies the curve; the equalizer's own switch decides whether it is active. */
+    private fun effectiveProfile(): EqualizerProfile {
+        val auto = autoProfile ?: return savedProfile
+        return if (savedProfile.enabled) auto.copy(enabled = true) else savedProfile
+    }
+
+    private val preferenceJob: Job = scope.launch {
+        context.dataStore.data.collectLatest { preferences ->
+            val profile = EqualizerProfileCodec.decode(preferences[ParametricEqualizerProfileKey])
+                ?: legacyProfile(preferences[EqualizerEnabledKey] ?: false, preferences[EqualizerBandLevelsKey])
+            savedProfile = profile
+            processor.setProfile(effectiveProfile())
+            reverb?.setProfile(
+                ReverbProfileCodec.decode(preferences[ReverbProfileKey]) ?: ReverbProfile.Off
+            )
+            limiter?.configure(preferences[OutputLimiterEnabledKey] ?: true, -0.5f)
+        }
+    }
+
+    fun release() = preferenceJob.cancel()
+
+    companion object {
+        fun legacyProfile(enabled: Boolean, encodedLevels: String?): EqualizerProfile {
+            val levels = encodedLevels?.split(',')?.mapNotNull(String::toIntOrNull).orEmpty()
+            val frequencies = listOf(60f, 230f, 910f, 3_600f, 14_000f)
+            return EqualizerProfile(
+                enabled = enabled,
+                presetId = "custom",
+                filters = frequencies.mapIndexed { index, frequency ->
+                    EqFilter(index + 1, FilterType.PEAK, frequency,
+                        (levels.getOrElse(index) { 0 } / 100f).coerceIn(-12f, 12f))
+                },
+            )
+        }
+    }
+}

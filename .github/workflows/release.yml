@@ -1,0 +1,148 @@
+name: Release (arm64)
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "版本名，用于 APK 文件名与 Release 标题（留空则自动取 tag 或短 SHA）"
+        required: false
+        default: ""
+      draft:
+        description: "作为草稿发布（不公开）"
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set version
+        id: version
+        run: |
+          version="${{ github.event.inputs.version }}"
+          if [ -z "$version" ]; then
+            if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+              version="${GITHUB_REF_NAME}"
+            else
+              version="snapshot-$(git rev-parse --short HEAD)"
+            fi
+          fi
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $version"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Prepare Android SDK
+        run: |
+          SDKMANAGER="$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager"
+          (yes || true) | "$SDKMANAGER" --licenses >/dev/null
+          "$SDKMANAGER" 'platforms;android-37.0' 'build-tools;34.0.0' 'cmake;3.22.1'
+
+      - name: Prepare Rust USB toolchain
+        run: |
+          rustup toolchain install 1.97.0 --profile minimal
+          rustup default 1.97.0
+          rustup target add aarch64-linux-android
+
+      - name: Decode signing keystore
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$KEYSTORE_BASE64" ]; then
+            echo "::error::缺少 secret KEYSTORE_BASE64，release 包无法签名"
+            exit 1
+          fi
+          echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Build signed release APK (arm64-v8a)
+        env:
+          MEI_KEYSTORE_PATH: ${{ runner.temp }}/release.jks
+          MEI_KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          MEI_KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          MEI_KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          # 不传 -PmeiAllAbis=true，app/build.gradle.kts 默认只打 arm64-v8a。
+          ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Collect artifacts
+        id: collect
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          version="${{ steps.version.outputs.value }}"
+          count=0
+          for apk in app/build/outputs/apk/release/*.apk; do
+            [ -e "$apk" ] || continue
+            suffix=""
+            case "$apk" in
+              *arm64-v8a*) suffix="-arm64" ;;
+            esac
+            out="out/Mei-AutoMix-${version}${suffix}.apk"
+            cp "$apk" "$out"
+            echo "APK: $out ($(du -h "$out" | cut -f1))"
+            count=$((count + 1))
+          done
+          if [ "$count" -eq 0 ]; then
+            echo "::error::没有产出 APK"
+            exit 1
+          fi
+          (cd out && sha256sum *.apk > SHA256SUMS.txt && cat SHA256SUMS.txt)
+          echo "apk_count=$count" >> "$GITHUB_OUTPUT"
+
+      - name: Verify signature
+        run: |
+          apk=$(ls out/*.apk | head -1)
+          APKSIGNER="$ANDROID_HOME/build-tools/34.0.0/apksigner"
+          "$APKSIGNER" verify --print-certs "$apk" | head -10 || {
+            echo "::error::APK 未签名（检查 MEI_KEYSTORE_PATH 是否生效）"
+            exit 1
+          }
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Mei-AutoMix-${{ steps.version.outputs.value }}-arm64
+          path: |
+            out/*.apk
+            out/SHA256SUMS.txt
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || format('automix-{0}', steps.version.outputs.value) }}
+          name: Mei AutoMix ${{ steps.version.outputs.value }}
+          draft: ${{ github.event.inputs.draft == 'true' }}
+          prerelease: ${{ contains(steps.version.outputs.value, '-') }}
+          generate_release_notes: true
+          files: |
+            out/*.apk
+            out/SHA256SUMS.txt
+          body: |
+            ## Mei + AutoMix（arm64-v8a）
+
+            - 基线上游：[ljyh223/Mei](https://github.com/ljyh223/Mei)（Apache-2.0）
+            - 本构建包含 AutoMix 混音移植：离线 PCM 解码 + WSOLA 变速 + 拍点对齐（BeatNet 模型 / DSP 兜底）
+            - 架构：仅 arm64-v8a
+            - 签名指纹见 `SHA256SUMS.txt` 与 apksigner 输出

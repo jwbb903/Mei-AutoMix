@@ -1,0 +1,27 @@
+BeatNet model
+-------------
+BeatNet is by Mojtaba Heydari, Frank Cwitkowitz, and Zhiyao Duan.
+Source: https://github.com/mjhydri/BeatNet
+Model: src/BeatNet/models/model_1_weights.pt, revision 81cedd4beeb7235262db80969a0c9ce9a48a0ed4
+Source SHA-256: 619091bc317ca3e83b45591d46f6de3d5a41588bcb39fe9fe7be30cffa6aca84
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+https://creativecommons.org/licenses/by/4.0/
+
+The model is included as app/src/main/assets/beatnet/model_1_f32.bin.
+Change made: tools/export_beatnet_model.py extracts the published checkpoint's
+seven little-endian float storages and concatenates them into a raw tensor
+asset. The numerical weights were not retrained or modified. Mei's Android
+decoder, feature extractor, rhythm planner, and native inference code are
+independent implementations and remain under Mei's Apache License 2.0.
+
+The BeatNet model remains under CC BY 4.0; Mei's Apache License 2.0 does not
+replace its attribution and redistribution conditions.
+
+USB native transport: NeriPlayer (https://github.com/cwuom/NeriPlayer)
+Original author: cwuom / ouom. Native sources imported from 113699bb.
+Used under the NeriPlayer Native Attribution License; see
+app/src/main/cpp/usbdriver/NERI_LICENSE.md. The Rust PCM/resampler and AudioStreaming
+parser ports in app/src/main/rust/mei-usb-core retain this attribution.
+No endorsement is implied.
+libusb is a separate shared library under LGPL-2.1-or-later.
+Its source and notices are in app/src/main/cpp/usbdriver/third_party/libusb.

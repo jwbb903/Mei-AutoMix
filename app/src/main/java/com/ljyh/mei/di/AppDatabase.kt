@@ -1,0 +1,191 @@
+package com.ljyh.mei.di
+
+import android.content.Context
+import androidx.room.Database
+import androidx.room.Room
+import androidx.room.RoomDatabase
+import androidx.room.TypeConverters
+import androidx.room.migration.Migration
+import androidx.sqlite.db.SupportSQLiteDatabase
+import com.ljyh.mei.data.model.room.AlbumArtistCrossRef
+import com.ljyh.mei.data.model.room.AlbumEntity
+import com.ljyh.mei.data.model.room.ArtistEntity
+import com.ljyh.mei.data.model.room.CacheColor
+import com.ljyh.mei.data.model.room.CachedLyric
+import com.ljyh.mei.data.model.room.DownloadTask
+import com.ljyh.mei.data.model.room.Like
+import com.ljyh.mei.data.model.room.PlaybackHistory
+import com.ljyh.mei.data.model.room.Playlist
+import com.ljyh.mei.data.model.room.PlaylistSongCrossRef
+import com.ljyh.mei.data.model.room.QQSong
+import com.ljyh.mei.data.model.room.Song
+import com.ljyh.mei.di.dao.AlbumsDao
+import com.ljyh.mei.di.dao.CachedLyricDao
+import com.ljyh.mei.di.dao.ColorDao
+import com.ljyh.mei.di.dao.DownloadDao
+import com.ljyh.mei.di.dao.HistoryDao
+import com.ljyh.mei.di.dao.LikeDao
+import com.ljyh.mei.di.dao.PlaylistDao
+import com.ljyh.mei.di.dao.PlaylistSongCrossRefDao
+import com.ljyh.mei.di.dao.QQSongDao
+import com.ljyh.mei.di.dao.SongDao
+
+@Database(
+    entities = [
+        CacheColor::class, Song::class, Like::class, QQSong::class, Playlist::class,
+        PlaybackHistory::class, AlbumEntity::class, ArtistEntity::class, AlbumArtistCrossRef::class,
+        CachedLyric::class, DownloadTask::class, PlaylistSongCrossRef::class
+    ],
+    version = 19
+)
+@TypeConverters(Converters::class)
+abstract class AppDatabase : RoomDatabase() {
+    abstract fun colorDao(): ColorDao
+    abstract fun songDao(): SongDao
+    abstract fun likeDao(): LikeDao
+    abstract fun qqSongDao(): QQSongDao
+    abstract fun playlistDao(): PlaylistDao
+    abstract fun historyDao(): HistoryDao
+    abstract fun AlbumsDao(): AlbumsDao
+    abstract fun cachedLyricDao(): CachedLyricDao
+    abstract fun downloadDao(): DownloadDao
+    abstract fun playlistSongCrossRefDao(): PlaylistSongCrossRefDao
+
+    companion object {
+        val MIGRATION_8_9 = object : Migration(8, 9) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS cached_lyric (
+                        songId TEXT NOT NULL PRIMARY KEY, content TEXT NOT NULL,
+                        translation TEXT, isVerbatim INTEGER NOT NULL DEFAULT 0,
+                        isPureMusic INTEGER NOT NULL DEFAULT 0,
+                        sourceName TEXT NOT NULL DEFAULT 'Empty',
+                        parserType TEXT NOT NULL DEFAULT 'LRC',
+                        updatedAt INTEGER NOT NULL DEFAULT 0
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_9_10 = object : Migration(9, 10) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("""
+                    CREATE TABLE IF NOT EXISTS download_task (
+                        songId TEXT NOT NULL PRIMARY KEY, url TEXT NOT NULL DEFAULT '',
+                        fileName TEXT NOT NULL DEFAULT '', fileType TEXT NOT NULL DEFAULT '',
+                        status TEXT NOT NULL DEFAULT 'PENDING', progress INTEGER NOT NULL DEFAULT 0,
+                        songTitle TEXT NOT NULL DEFAULT '', songArtist TEXT NOT NULL DEFAULT '',
+                        songAlbum TEXT NOT NULL DEFAULT '', songCover TEXT NOT NULL DEFAULT '',
+                        quality TEXT NOT NULL DEFAULT '', createdAt INTEGER NOT NULL DEFAULT 0,
+                        updatedAt INTEGER NOT NULL DEFAULT 0
+                    )
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_10_11 = object : Migration(10, 11) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE song ADD COLUMN sourceType TEXT NOT NULL DEFAULT 'STREAM'")
+                db.execSQL("ALTER TABLE song ADD COLUMN fileHash TEXT")
+                db.execSQL("ALTER TABLE song ADD COLUMN fileSize INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE song ADD COLUMN fileFormat TEXT")
+                db.execSQL("ALTER TABLE song ADD COLUMN bitrate INTEGER")
+                db.execSQL("ALTER TABLE song ADD COLUMN sampleRate INTEGER")
+                db.execSQL("ALTER TABLE song ADD COLUMN folderPath TEXT")
+                db.execSQL("ALTER TABLE song ADD COLUMN addedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE song ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN type TEXT NOT NULL DEFAULT 'NETEAST'")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN description TEXT")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN createdAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN updatedAt INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("CREATE TABLE IF NOT EXISTS playlist_song_cross_ref (playlistId TEXT NOT NULL, songId TEXT NOT NULL, sortOrder INTEGER NOT NULL DEFAULT 0, addedAt INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(playlistId, songId))")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_pscr_playlist ON playlist_song_cross_ref(playlistId)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS idx_pscr_song ON playlist_song_cross_ref(songId)")
+                db.execSQL("CREATE TABLE IF NOT EXISTS scan_folder (id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, path TEXT NOT NULL, label TEXT, isDefault INTEGER NOT NULL DEFAULT 0, enabled INTEGER NOT NULL DEFAULT 1, lastScanAt INTEGER, songCount INTEGER NOT NULL DEFAULT 0)")
+            }
+        }
+
+        val MIGRATION_11_12 = object : Migration(11, 12) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Clean up URL-encoded data from broken SAF scanner
+                db.execSQL("DELETE FROM scan_folder")
+                db.execSQL("DELETE FROM playlist_song_cross_ref WHERE playlistId LIKE 'folder_%'")
+                db.execSQL("DELETE FROM playlist WHERE type = 'FOLDER'")
+                db.execSQL("DELETE FROM song WHERE sourceType = 'LOCAL'")
+            }
+        }
+
+        val MIGRATION_12_13 = object : Migration(12, 13) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Remove all SAF-based content:// data, keep only real file paths
+                db.execSQL("DELETE FROM song WHERE path LIKE 'content://%'")
+                db.execSQL("DELETE FROM scan_folder WHERE path LIKE 'content://%'")
+                db.execSQL("DELETE FROM playlist_song_cross_ref WHERE playlistId LIKE 'folder_%'")
+                db.execSQL("DELETE FROM playlist WHERE type = 'FOLDER'")
+            }
+        }
+
+        val MIGRATION_13_14 = object : Migration(13, 14) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // 把 artist 从纯文本包成 JSON 数组，拆分 / 分隔的艺术家
+                db.execSQL("""
+                    UPDATE song SET artist = 
+                      CASE WHEN instr(artist, '/') > 0 
+                        THEN '["' || REPLACE(REPLACE(artist, '\\', '\\\\'), '/', '","') || '"]'
+                        ELSE '["' || REPLACE(artist, '\\', '\\\\') || '"]'
+                      END
+                    WHERE artist NOT LIKE '[%'
+                """.trimIndent())
+            }
+        }
+
+        val MIGRATION_14_15 = object : Migration(14, 15) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE cached_lyric DROP COLUMN aiProcessed")
+            }
+        }
+
+        val MIGRATION_15_16 = object : Migration(15, 16) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE playlist ADD COLUMN playCount INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN lastPlayTime INTEGER NOT NULL DEFAULT 0")
+                db.execSQL("ALTER TABLE playlist ADD COLUMN localPlayCount INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_16_17 = object : Migration(16, 17) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE download_task ADD COLUMN saveSeparateLyrics INTEGER NOT NULL DEFAULT 0")
+            }
+        }
+
+        val MIGRATION_17_18 = object : Migration(17, 18) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Earlier cache rows have no account owner and cannot be assigned safely.
+                db.execSQL("DROP TABLE IF EXISTS `like`")
+                db.execSQL("CREATE TABLE IF NOT EXISTS `like` (`userId` TEXT NOT NULL, `id` TEXT NOT NULL, PRIMARY KEY(`userId`, `id`))")
+            }
+        }
+
+        val MIGRATION_18_19 = object : Migration(18, 19) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE song ADD COLUMN matchedNeteaseId INTEGER")
+            }
+        }
+
+        @Volatile
+        private var INSTANCE: AppDatabase? = null
+
+        fun getDatabase(context: Context): AppDatabase {
+            return INSTANCE ?: synchronized(this) {
+                Room.databaseBuilder(
+                    context.applicationContext,
+                    AppDatabase::class.java,
+                    "app_database"
+                ).addMigrations(MIGRATION_8_9, MIGRATION_9_10, MIGRATION_10_11, MIGRATION_11_12, MIGRATION_12_13, MIGRATION_13_14, MIGRATION_14_15, MIGRATION_15_16, MIGRATION_16_17, MIGRATION_17_18, MIGRATION_18_19)
+                    .build()
+                    .also { INSTANCE = it }
+            }
+        }
+    }
+}

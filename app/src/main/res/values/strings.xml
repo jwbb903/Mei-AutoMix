@@ -1,0 +1,16 @@
+<resources>
+    <string name="app_name">梅</string>
+    <string name="app_name_en">Mei</string>
+    <string name="music_player">Music Player</string>
+    <string name="error_no_internet">No network connection</string>
+    <string name="error_timeout">Timeout</string>
+    <string name="error_unknown">Unknown error</string>
+
+    <string name="search_bar_search">Search</string>
+    <string name="suggestions_available">Suggestions available</string>
+    <string name="navigation_back">返回</string>
+    <string name="color_picker_spectrum">色谱</string>
+    <string name="color_picker_sliders">滑块</string>
+    <string name="color_picker_opacity">不透明度</string>
+    <string name="color_picker_grid">网格</string>
+</resources>
