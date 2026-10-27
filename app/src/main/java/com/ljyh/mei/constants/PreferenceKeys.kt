@@ -6,8 +6,6 @@ import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
-import com.ljyh.mei.playback.PlayMode
-import com.materialkolor.scheme.DynamicScheme
 
 val LastHomePageTime = longPreferencesKey("lastHomePageTime")
 val LastHomePageData_1 = stringPreferencesKey("lastHomePageData_1")
@@ -19,6 +17,7 @@ val DarkModeKey = stringPreferencesKey("darkMode")
 val PureBlackKey = booleanPreferencesKey("pureBlack")
 val PlayerTextAlignmentKey = stringPreferencesKey("playerTextAlignment")
 val HidePlayerTitleBracketsKey = booleanPreferencesKey("hidePlayerTitleBrackets")
+val AlwaysExpandMiniPlayerKey = booleanPreferencesKey("appearance.alwaysExpandMiniPlayer")
 val SliderStyleKey = stringPreferencesKey("sliderStyle")
 
 val UserIdKey = stringPreferencesKey("userId")
@@ -74,10 +73,14 @@ val MoreActionOrderKey = stringPreferencesKey("moreActionOrder")
 val NormalLyricTextSizeKey = stringPreferencesKey("lyricTextSize")
 val NormalLyricTextBoldKey = booleanPreferencesKey("lyricTextBold")
 val ShowLyricPhoneticKey = booleanPreferencesKey("showLyricPhonetic")
+val ShowLyricTransitionKey = booleanPreferencesKey("showLyricTransition")
 val SeekOnLyricTapKey = booleanPreferencesKey("seekOnLyricTap")
 
 val AccompanimentLyricTextSizeKey = stringPreferencesKey("accompanimentLyricTextSize")
 val AccompanimentLyricTextBoldKey = booleanPreferencesKey("accompanimentLyricTextBold")
+
+val PhoneticLyricTextSizeKey = stringPreferencesKey("phoneticLyricTextSize")
+val PhoneticLyricTextBoldKey = booleanPreferencesKey("phoneticLyricTextBold")
 
 val LoopPlaybackKey = booleanPreferencesKey("loopPlayback")
 val KeepPlayerScreenOnKey = booleanPreferencesKey("keepPlayerScreenOn")
