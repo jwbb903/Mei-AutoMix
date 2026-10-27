@@ -95,6 +95,9 @@ internal class AutoMixSession(
     var beatInfo: String = "未检测"
         private set
 
+    /** A 轨相对 B 轨的响度补偿（dB）；负值 = 把 A 压小。 */
+    private var loudnessTrimDb = 0.0
+
     private var regionA: MixRegion? = null
     private var regionB: MixRegion? = null
     private var modelA: BeatGridMarks? = null
@@ -224,7 +227,19 @@ internal class AutoMixSession(
             aStart + 1.0,
             (aEnd - overlap - 0.3).coerceAtLeast(aStart + 1.0),
         )
-        val aExit = gridA.nearestDownbeat(wantedExit, 1.2)
+
+        // 结构视图：能量包络用来避开高潮，优先在尾奏/间奏换句。
+        val structure = StructureAnalyzer.analyze(a.samples, a.sampleRate, aStart)
+        val phrase = PhraseAligner.chooseExit(
+            target = wantedExit,
+            grid = gridA,
+            structure = structure,
+            aStart = aStart,
+            aEnd = aEnd,
+            overlap = overlap,
+        )
+        var aExit = phrase?.exit
+            ?: gridA.nearestDownbeat(wantedExit, 1.2)
             ?: gridA.nearestBeat(wantedExit, 0.6)
             ?: wantedExit
         if (aExit + overlap > aEnd - 0.2) {
@@ -235,6 +250,12 @@ internal class AutoMixSession(
             ?: plan.bEntry
         val rate = (periodB / periodA).coerceIn(1.0 - MAX_STRETCH, 1.0 + MAX_STRETCH)
         val rampBack = (4 * periodB).coerceIn(0.4, 2.0)
+
+        // 响度匹配：把 A 压到与 B 同响度，交接点就不会有音量台阶。
+        // B 保持 unity（交接后由 ExoPlayer 接手，两边必须一致）。
+        val lufsA = LoudnessMeter.integratedLufs(a.samples, a.sampleRate, 2)
+        val lufsB = LoudnessMeter.integratedLufs(b.samples, b.sampleRate, 2)
+        loudnessTrimDb = LoudnessMeter.trimDb(referenceLufs = lufsA, targetLufs = lufsB)
 
         if (bEntry + overlap + rampBack + 1.0 > bEnd) {
             Timber.tag(TAG).i("model align skipped: B 可用区不足")
@@ -247,9 +268,14 @@ internal class AutoMixSession(
 
         beatInfo = buildString {
             append("模型 ").append(gridA.describe()).append(" / ").append(gridB.describe())
-            append(" rate=%.3f overlap=%.2fs(4小节) ".format(rate, overlap))
+            append(" rate=%.3f ".format(rate))
+            if (phrase != null) {
+                append("乐句=${phrase.bars}小节 能量=%.2f ".format(phrase.energy))
+            }
+            append("overlap=%.2fs ".format(overlap))
             append("aExit %.2f→%.2f ".format(plan.aExit, aExit))
-            append("bEntry %.2f→%.2f".format(plan.bEntry, bEntry))
+            append("bEntry %.2f→%.2f ".format(plan.bEntry, bEntry))
+            append("响度 A=%.1fLUFS B=%.1fLUFS trim=%+.1fdB".format(lufsA, lufsB, loudnessTrimDb))
         }
         Timber.tag(TAG).i("model align: %s", beatInfo)
         return plan.copy(
@@ -399,7 +425,7 @@ internal class AutoMixSession(
             regionB = b,
             voiceA = VOICE_A,
             voiceB = VOICE_B,
-            volumeA = 1.0,
+            volumeA = Math.pow(10.0, loudnessTrimDb / 20.0),
             volumeB = 1.0,
         )
         // 从「退出点前 LEAD_SECONDS」开始出声，保证与 ExoPlayer A 的内容位置一致；
@@ -436,18 +462,39 @@ internal class AutoMixSession(
     private fun startMonitor(engine: AutoMixEngine, output: MixerOutput) {
         monitorJob = scope.launch {
             val startedAt = System.currentTimeMillis()
+            // A 的真实结尾必须早于交接点，否则 setPauseAtEndOfMediaItems 会让 A
+            // 在混音中途自动暂停（playWhenReady 变 false），monitor 误判成用户暂停，
+            // 整个混音输出被连带停掉 —— 这就是「切歌时突然暂停」的直接原因。
+            val plan = activePlan
+            val aEndTimeline = outgoingDurationMs / 1000.0 - plan.aExit + LEAD_SECONDS
+            val effectiveHandback = minOf(estimatedSeconds - 0.9, aEndTimeline - 0.4)
+            Timber.tag(TAG).i(
+                "monitor: handback=%.2fs (A 结尾在 %.2fs)",
+                effectiveHandback, aEndTimeline,
+            )
             while (!handbackStarted && !aborted) {
                 delay(50)
-                onPlayerThread { outgoingPlaying = runCatching { outgoing.isPlaying }.getOrDefault(true) }
+                var positionMs = 0L
+                onPlayerThread {
+                    outgoingPlaying = runCatching { outgoing.isPlaying }.getOrDefault(true)
+                    positionMs = runCatching { outgoing.currentPosition }.getOrDefault(0L)
+                }
+                val aEnded = !outgoingPlaying && positionMs >= outgoingDurationMs - 300
                 if (!outgoingPlaying) {
-                    output.pause()
-                    continue
+                    if (aEnded && engine.bStarted) {
+                        // A 自然播完：不是用户暂停，直接进入交接，别把混音停掉。
+                        handback(engine, output, "A ended")
+                        return@launch
+                    }
+                    if (!aEnded) {
+                        output.pause()
+                        continue
+                    }
                 } else if (output.isRunning && output.isPaused) {
                     output.resume()
                 }
                 val rendered = engine.renderedSeconds
-                val handbackAt = estimatedSeconds - 0.9
-                if (!preseekDone && engine.bStarted && rendered >= handbackAt - PRESEEK_LEAD) {
+                if (!preseekDone && engine.bStarted && rendered >= effectiveHandback - PRESEEK_LEAD) {
                     preseekDone = true
                     presekIncoming(output, engine)
                 }
@@ -455,8 +502,13 @@ internal class AutoMixSession(
                     handback(engine, output, "forced")
                     return@launch
                 }
-                if (engine.bStarted && rendered >= handbackAt) {
+                if (engine.bStarted && rendered >= effectiveHandback) {
                     handback(engine, output, "timeline")
+                    return@launch
+                }
+                if (aEnded && !engine.bStarted && rendered > LEAD_SECONDS + plan.overlap) {
+                    // A 已到尾但 B 还没接上（极端短歌）：放弃混音，走普通淡出。
+                    abort("A ended before overlap")
                     return@launch
                 }
                 if (System.currentTimeMillis() - startedAt > (estimatedSeconds + 10) * 1000) {

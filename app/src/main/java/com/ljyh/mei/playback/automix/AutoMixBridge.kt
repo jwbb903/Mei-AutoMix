@@ -68,7 +68,13 @@ internal object AutoMixBridge {
     fun planSynthetic(outgoingDurationMs: Long, overlapMs: Long): MixPlan? {
         if (outgoingDurationMs < 20_000L) return null
         val overlap = (overlapMs / 1000.0).coerceIn(2.0, 12.0)
-        val aExit = (outgoingDurationMs / 1000.0 - overlap - 0.6).coerceAtLeast(0.0)
+        // 结尾余量必须盖过「overlap + rampBack - 交接提前量」，否则 A 会先于
+        // 交接点自然播完，被 setPauseAtEndOfMediaItems 自动暂停。
+        // （handback 在 LEAD + overlap + rampBack - 0.9s，A 结尾在 LEAD + aExit + overlap + 0.6s，
+        //   需要 aExit >= rampBack + 1.5s 才能保证 A 活到交接。）
+        val rampBack = 2.0
+        val tail = (rampBack + 1.5).coerceAtLeast(2.0)
+        val aExit = (outgoingDurationMs / 1000.0 - overlap - tail).coerceAtLeast(0.0)
         if (aExit < 5.0) return null
         return MixPlan(
             technique = MixTechnique.BeatMix,
@@ -76,7 +82,7 @@ internal object AutoMixBridge {
             overlap = overlap,
             bEntry = 1.5,
             rate = 1.0,
-            rampBack = 2.0,
+            rampBack = rampBack,
             handoff = 0.55,
             gainB = 1.0,
             reason = "PCM overlap without beat grid",

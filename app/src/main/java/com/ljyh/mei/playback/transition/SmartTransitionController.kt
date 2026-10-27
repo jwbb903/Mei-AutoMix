@@ -515,7 +515,11 @@ internal class SmartTransitionController(
         val speed = outgoing.playbackParameters.speed
         incoming.volume = 1f
         incoming.playbackParameters = PlaybackParameters(speed)
-        incoming.playWhenReady = outgoing.playWhenReady
+        // 注意：交接后 B 必须无条件继续播放。
+        // A 的歌曲结尾早于交接点时，setPauseAtEndOfMediaItems 会让 A 的
+        // playWhenReady 变成 false；把它抄给 B 就变成「新歌接班即暂停」。
+        // 用户主动暂停时 MusicService 会另行发 pause，不需要在这里传递状态。
+        incoming.playWhenReady = true
         promoteGuardUntil = SystemClock.elapsedRealtime() + 2_500L
         decks.promote()
         runCatching {
@@ -528,7 +532,7 @@ internal class SmartTransitionController(
         // 这里把音量与播放态钉定，避免被其它组件（音量平滑/音频焦点）淡掉。
         runCatching {
             incoming.volume = 1f
-            if (outgoing.playWhenReady) incoming.play()
+            incoming.play()
         }
         mixSession = null
         fade = null
