@@ -338,9 +338,9 @@ class MusicService : MediaLibraryService(),
                 .collect { (prefEnabled, settings) ->
                     // USB 独占已从本构建移除：保持关闭，也不再因为旧偏好去重配输出。
                     usbPreferences = settings
+                    val enabled = false
                     val reconfigure = false
                     @Suppress("UNUSED_EXPRESSION") prefEnabled
-                    usbPreferences = settings
                     usbExclusiveEnabled = enabled
                     usbKeepAlive.update()
                     if (!reconfigure) return@collect
