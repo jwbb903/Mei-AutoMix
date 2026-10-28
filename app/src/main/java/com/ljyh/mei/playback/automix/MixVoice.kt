@@ -89,8 +89,13 @@ internal class MixVoice(
                 blendFramesDone += frames
             }
         } else {
-            readRaw(dry, frames, contentIndex)
-            contentIndex += frames
+            // raw 直读路径也必须按 rate 推进：beginRawBlend 只是"不再做时间伸缩"，
+            // 并不改变这条轨相对输出的播放速率。若这里退回 contentIndex += frames，
+            // B 会在交叉淡化结束的瞬间从 rate 突变成 1.0 —— BPM 不同的两首歌
+            // 每秒漂移几十毫秒，交接时 contentSecondsB 与 ExoPlayer B 的真实
+            // 位置就对不上了，表现为切歌跳音/卡顿。
+            readRawInterpolated(dry, frames, contentIndex)
+            contentIndex += frames * rate
             if (blendFramesDone >= 0) blendFramesDone += frames
         }
 
@@ -157,6 +162,36 @@ internal class MixVoice(
                 destination[i * channels + channel] =
                     if (source < 0 || source >= region.frames) 0f
                     else region.sampleAt(source, channel).toFloat()
+            }
+        }
+    }
+
+    /**
+     * 按连续（非整数）位置读 PCM，帧间做线性插值。
+     *
+     * [readRaw] 用的是 `index.roundToLong()`，当 [rate] != 1.0 时每帧前进量是
+     * 小数，取整后会形成 1,1,2,2,2,1... 的读位抖动 —— 这是叠加在速率漂移之上
+     * 的细碎咔哒声来源。插值让读取位置连续，彻底消除这一类噪声。
+     */
+    private fun readRawInterpolated(destination: FloatArray, frames: Int, index: Double) {
+        if (rate == 1.0) {
+            readRaw(destination, frames, index)
+            return
+        }
+        val last = region.frames - 1
+        for (i in 0 until frames) {
+            val position = index + i * rate
+            val base = position.toInt()
+            val frac = position - base
+            for (channel in 0 until channels) {
+                val index0 = i * channels + channel
+                val a = region.safeSample(base, channel)
+                if (frac < 1e-9 || base >= last) {
+                    destination[index0] = a.toFloat()
+                } else {
+                    val b = region.safeSample(base + 1, channel)
+                    destination[index0] = (a + (b - a) * frac).toFloat()
+                }
             }
         }
     }

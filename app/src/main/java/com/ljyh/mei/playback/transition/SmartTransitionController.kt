@@ -213,9 +213,13 @@ internal class SmartTransitionController(
                         val startMs = (session.startAtSeconds * 1000).toLong()
                         if (session.isReady && active.currentPosition >= startMs) {
                             beginAutoMix(session, active, incoming)
+                            // PCM 混音已接管：beginAutoMix 会把两个 ExoPlayer 静音，
+                            // 之后绝不能再走 beginFade/applyEnvelopeGains，否则会把
+                            // 引擎算好的增益覆盖成 deck 淡入淡出曲线。
+                            return
                         } else if (remaining < 3_000L && !session.isReady) {
                             Timber.tag("SmartTransition").w(
-                                "AutoMix regions not ready in time, falling back to envelope", 
+                                "AutoMix regions not ready in time, falling back to envelope",
                             )
                             failedMixPair = key
                             session.release()
@@ -305,6 +309,10 @@ internal class SmartTransitionController(
         val startMs = (session.startAtSeconds * 1000).toLong()
         if (session.isReady && active.currentPosition >= startMs) {
             beginAutoMix(session, active, incoming)
+            // PCM 混音已接管：beginAutoMix 会把两个 ExoPlayer 静音，
+            // 之后绝不能再走 beginFade/applyEnvelopeGains，否则会把
+            // 引擎算好的增益覆盖成 deck 淡入淡出曲线。
+            return
         } else if (remaining < 3_000L && !session.isReady) {
             Timber.tag("SmartTransition").w(
                 "AutoMix regions not ready in time (no beat grid), falling back to envelope",
@@ -313,6 +321,9 @@ internal class SmartTransitionController(
             session.release()
             mixSession = null
             beginFade(key, TransitionPlan(min(settings.fixedMs, remaining - 150L)))
+        } else {
+            // 解码中 / 还没到起播点：保持静音等待，别走普通淡入淡出。
+            return
         }
     }
 

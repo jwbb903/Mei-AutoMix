@@ -24,6 +24,13 @@ internal class MixRegion(
         return if (index in samples.indices) samples[index].toDouble() else 0.0
     }
 
+    /** 越界时钳位到 [0, frames-1]，供插值读取使用（避免首尾出现 0 值凹陷）。 */
+    fun safeSample(frame: Int, channel: Int): Double {
+        val clamped = frame.coerceIn(0, (frames - 1).coerceAtLeast(0))
+        val index = (clamped.toLong() * channelCount + channel).toInt()
+        return if (index in samples.indices) samples[index].toDouble() else 0.0
+    }
+
     companion object {
         fun empty(sampleRate: Int, startSeconds: Double): MixRegion =
             MixRegion(FloatArray(0), sampleRate, startSeconds)

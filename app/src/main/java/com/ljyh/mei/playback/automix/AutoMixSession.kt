@@ -86,6 +86,15 @@ internal class AutoMixSession(
         private const val BEAT_MODEL_TIMEOUT_MS = 25_000L
         private const val VOICE_A = 1
         private const val VOICE_B = 2
+
+        /** 交接淡化期间的位置校正间隔。 */
+        private const val DRIFT_CORRECTION_INTERVAL_MS = 30L
+        /** 小于该差值认为已对齐，不做校正（避免在噪声上来回 seek）。 */
+        private const val DRIFT_TOLERANCE_MS = 12L
+        /** 单次校正的最大步长：再大就会出现可闻的跳变。 */
+        private const val DRIFT_MAX_STEP_MS = 40L
+        /** 混音输出与 ExoPlayer A 位置偏差的告警阈值。 */
+        private const val DRIFT_WARN_MS = 120L
     }
 
     /** 解码后按拍点重算的最终 plan；解码完成前就是上游给的原 plan。 */
@@ -494,7 +503,20 @@ internal class AutoMixSession(
                     output.resume()
                 }
                 val rendered = engine.renderedSeconds
-                if (!preseekDone && engine.bStarted && rendered >= effectiveHandback - PRESEEK_LEAD) {
+                // 第三层：混音输出时钟 vs ExoPlayer A 的媒体时钟。两者没有同步机制，
+                // AudioTrack 的写入节奏和 ExoPlayer 的解码节奏各自走时，差值会持续
+                // 累积。累积超过 DRIFT_WARN_MS 就必须补偿，否则交接时带着这个差值
+                // 跳到 B 上。补偿方式是把差值折算进 rendered 判据（等效于提前/延后
+                // 触发交接），而不是去 seek A —— A 此刻在被用户听着，不能动。
+                val driftMs = ((engine.positionSeconds - positionMs / 1000.0) * 1000).toLong()
+                if (abs(driftMs) > DRIFT_WARN_MS) {
+                    Timber.tag(TAG).w(
+                        "mixer/A drift %dms (mixer=%.3fs player=%.3fs)",
+                        driftMs, engine.positionSeconds, positionMs / 1000.0,
+                    )
+                }
+                val handbackClock = rendered - driftMs / 1000.0
+                if (!preseekDone && engine.bStarted && handbackClock >= effectiveHandback - PRESEEK_LEAD) {
                     preseekDone = true
                     presekIncoming(output, engine)
                 }
@@ -502,7 +524,7 @@ internal class AutoMixSession(
                     handback(engine, output, "forced")
                     return@launch
                 }
-                if (engine.bStarted && rendered >= effectiveHandback) {
+                if (engine.bStarted && handbackClock >= effectiveHandback) {
                     handback(engine, output, "timeline")
                     return@launch
                 }
@@ -523,7 +545,16 @@ internal class AutoMixSession(
         }
     }
 
-    /** 交接前 1 秒把 B seek 到目标内容位置（保持静音），让解码管线预热。 */
+    /**
+     * 交接前 [PRESEek_LEAD] 秒把 B seek 到目标内容位置（保持静音），让解码管线预热。
+     *
+     * **B 的位置以 ExoPlayer 为准，不由混音引擎推算。** 引擎的 `contentSecondsB`
+     * 是自己数帧数出来的，和 ExoPlayer B 的媒体时钟之间没有同步；直接用前者
+     * seek，交接时会带着一个等于两者差值的跳音。这里改成：
+     * 1. 先按引擎目标位置 seek；
+     * 2. 再读回 ExoPlayer 的 `currentPosition` 作为真实基准，差值留给后续
+     *    [correctIncomingDrift] 在交叉淡化期间平滑吃掉。
+     */
     private fun presekIncoming(output: MixerOutput, engine: AutoMixEngine) {
         val latency = output.latencySeconds()
         val target = engine.contentSecondsB - latency
@@ -541,6 +572,32 @@ internal class AutoMixSession(
         }
     }
 
+    /**
+     * 交接窗口内的漂移校正：把 B 的真实位置缓慢拉回混音内容位置。
+     *
+     * ExoPlayer 的 seek 是异步的，`seekTo` 返回后 `currentPosition` 可能还没到
+     * 目标；同时混音引擎与媒体时钟各自走时，差值会随时间累积。这里在交叉淡化
+     * 期间每 [DRIFT_CORRECTION_INTERVAL_MS] 做一次小步长修正，单次不超过
+     * [DRIFT_MAX_STEP_MS]，避免可闻的跳变。
+     */
+    private fun correctIncomingDrift(engine: AutoMixEngine) {
+        val targetMs = (engine.contentSecondsB * 1000).roundToLong()
+        onPlayerThread {
+            runCatching {
+                val actualMs = incoming.currentPosition
+                val deltaMs = targetMs - actualMs
+                if (abs(deltaMs) < DRIFT_TOLERANCE_MS) return@runCatching
+                val stepMs = deltaMs.coerceIn(-DRIFT_MAX_STEP_MS, DRIFT_MAX_STEP_MS)
+                val adjusted = (actualMs + stepMs).coerceAtLeast(0L)
+                Timber.tag(TAG).d(
+                    "drift correct: target=%dms actual=%dms delta=%dms step=%dms",
+                    targetMs, actualMs, deltaMs, stepMs,
+                )
+                incoming.seekTo(adjusted)
+            }.onFailure { Timber.tag(TAG).w(it, "drift correction failed") }
+        }
+    }
+
     private fun handback(engine: AutoMixEngine, output: MixerOutput, reason: String) {
         if (handbackStarted) return
         handbackStarted = true
@@ -550,13 +607,24 @@ internal class AutoMixSession(
             reason, contentB, engine.renderedSeconds, engine.stage,
         )
         // 混音 150ms 线性淡出，同时 B 从 0 拉到 1（内容相同，线性交叉避免 +6dB 峰）。
+        // 淡化期间同步做漂移校正：B 的真实位置必须在这 150ms 内收敛到混音内容
+        // 位置，否则 output.stop() 的一瞬间就是一次可闻的跳音。
         output.requestFadeOut(HANDBACK_FADE)
         scope.launch {
             val steps = 15
+            val stepDelayMs = (HANDBACK_FADE * 1000 / steps).toLong()
+            var lastCorrectionAt = 0L
             for (step in 0..steps) {
                 onPlayerThread { runCatching { incoming.volume = step.toFloat() / steps } }
-                delay((HANDBACK_FADE * 1000 / steps).toLong())
+                val now = System.currentTimeMillis()
+                if (now - lastCorrectionAt >= DRIFT_CORRECTION_INTERVAL_MS) {
+                    lastCorrectionAt = now
+                    correctIncomingDrift(engine)
+                }
+                delay(stepDelayMs)
             }
+            // 收尾：把残留差值一次性吃掉，确保 mixer 停下时两条轨位置一致。
+            correctIncomingDrift(engine)
             Timber.tag(TAG).i("handback crossfade done, mixer stopped")
             output.stop()
             engine.dispose()
