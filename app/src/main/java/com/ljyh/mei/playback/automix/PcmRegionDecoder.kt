@@ -13,6 +13,7 @@ import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.withContext
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
+import kotlin.math.abs
 import kotlin.math.roundToInt
 
 /**
@@ -140,7 +141,28 @@ internal class PcmRegionDecoder(private val context: Context) {
             } else {
                 remapChannels(resampled, sourceChannels, targetChannels)
             }
-            return MixRegion(shaped, targetSampleRate, startSeconds, targetChannels)
+            // MixRegion.startSeconds 必须是「实际解码出的第一帧时间」，而不是请求值。
+            // MediaExtractor.seekTo(SEEk_TO_PREVIOUS_SYNC) 会落到上一个同步帧，通常比
+            // startUs 早几十到几百毫秒；readStereo 又会把早于 startUs 的帧裁掉。两相
+            // 抵消后实际起点与请求值之间有一个不固定的偏差，而 region.indexOf() 和
+            // AutoMixSession 的 startIndexA 都依赖 startSeconds 做帧定位 —— 用它算
+            // 出来的内容位置就是错的，混音会和 ExoPlayer A 波形错开，听感是「晃/糊/卡」
+            // 而不是断音。
+            val firstChunkStart = starts.firstOrNull()
+            if (firstChunkStart != null && abs(firstChunkStart - startSeconds) > 0.02) {
+                android.util.Log.i(
+                    "PcmRegionDecoder",
+                    "seek deviation: requested=%.3fs actual=%.3fs delta=%.3fs".format(
+                        startSeconds, firstChunkStart, firstChunkStart - startSeconds,
+                    ),
+                )
+            }
+            return MixRegion(
+                shaped,
+                targetSampleRate,
+                firstChunkStart ?: startSeconds,
+                targetChannels,
+            )
         } finally {
             runCatching { decoder?.stop() }
             decoder?.release()

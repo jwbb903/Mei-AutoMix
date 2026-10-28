@@ -180,12 +180,20 @@ internal class AutoMixSession(
             }
             regionA = decodedA
             regionB = decodedB
+            // 打印的是「实际解码范围」，不是请求范围。请求值可能因为 seek 落点
+            // 与真实起点不一致而对不上，排查错位问题时看这一行。
+            val aActualEnd = decodedA.startSeconds + decodedA.frames / decodedA.sampleRate.toDouble()
+            val bActualEnd = decodedB.startSeconds + decodedB.frames / decodedB.sampleRate.toDouble()
+            val aRequestStart = (initialPlan.aExit - MARGIN_BEFORE_EXIT).coerceAtLeast(0.0)
+            val bRequestStart = initialPlan.bEntry.coerceAtLeast(0.0)
             Timber.tag(TAG).i(
-                "prepare: decoded in %d ms A=%.2fs B=%.2fs @%d Hz",
+                "prepare: decoded in %d ms A=%.2fs B=%.2fs @%d Hz | 实际 A=[%.3f,%.3f]s (请求 %.3f, 偏差 %+.3fs) B=[%.3f,%.3f]s (请求 %.3f, 偏差 %+.3fs)",
                 elapsed,
                 decodedA.frames / decodedA.sampleRate.toDouble(),
                 decodedB.frames / decodedB.sampleRate.toDouble(),
                 decodedA.sampleRate,
+                decodedA.startSeconds, aActualEnd, aRequestStart, decodedA.startSeconds - aRequestStart,
+                decodedB.startSeconds, bActualEnd, bRequestStart, decodedB.startSeconds - bRequestStart,
             )
             // 模型（BeatNet）拍网格：优先级高于内置 DSP，拿不到就回退。
             val marksStarted = System.currentTimeMillis()
