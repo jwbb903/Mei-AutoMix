@@ -108,11 +108,27 @@ internal class MixVoice(
         }
     }
 
-    /** 输出侧淡出（C# `RenderRampOut`），用于交接瞬间避免咔哒声。 */
+    /**
+     * 输出侧淡出（C# `RenderRampOut`），用于交接瞬间避免咔哒声。
+     *
+     * 两个坑都踩过：
+     * 1. 斜坡必须是**跨 quantum 连续**的。原来只在单个 quantum 内做 1ms 斜坡，
+     *    等于一帧内硬切到 0 —— 那一下就是可闻的咔哒声。改成 20ms 斜坡，
+     *    由调用方按 quantum 逐块喂进来，[rampOutRemaining] 跨块递减。
+     * 2. [readRaw] 必须换成插值版。交接时 B 通常还带着 rate（变速播放中），
+     *    取整读位会叠加一层细碎噪声；同时 contentIndex 也要按 rate 推进，
+     *    否则斜坡期间内容位置和真实播放位置脱钩。
+     */
+    private var rampOutRemaining = 0
+
+    fun beginRampOut(seconds: Double) {
+        rampOutRemaining = max(1, (seconds * sampleRate).toInt())
+    }
+
     fun renderRampOut(mix: FloatArray, mixOffsetFrames: Int, frames: Int) {
         ensureCapacity(frames)
-        readRaw(dry, frames, contentIndex)
-        val rampFrames = min(frames, max(1, (sampleRate * 0.001).toInt()))
+        readRawInterpolated(dry, frames, contentIndex)
+        val rampFrames = min(frames, rampOutRemaining)
         for (i in 0 until rampFrames) {
             val g = gain * (1 - (i + 1).toDouble() / rampFrames)
             for (channel in 0 until channels) {
@@ -120,7 +136,8 @@ internal class MixVoice(
                 mix[(mixOffsetFrames + i) * channels + channel] += (dry[index] * g).toFloat()
             }
         }
-        contentIndex += frames
+        contentIndex += frames * rate
+        rampOutRemaining = max(0, rampOutRemaining - frames)
         gain = 0.0
         targetGain = 0.0
     }

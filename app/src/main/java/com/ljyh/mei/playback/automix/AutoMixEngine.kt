@@ -285,6 +285,9 @@ internal class AutoMixEngine(
         }
 
         if (pendingHandBack && mixerB != null) {
+            // 斜坡一次性初始化（20ms），之后由 renderRampOut 跨 quantum 连续递减。
+            // 原来这里是每块只淡 1ms 再硬切到 0，那一记就是切歌咔哒声。
+            mixerB?.beginRampOut(RAMP_OUT_SECONDS)
             mixerB?.renderRampOut(mix, 0, frames)
             mixerB?.dispose()
             mixerB = null
@@ -437,5 +440,8 @@ internal class AutoMixEngine(
         mixerB = null
     }
 }
+
+/** 交接斜坡时长：跨 quantum 连续的淡出，避免单块内硬切出咔哒声。 */
+private const val RAMP_OUT_SECONDS = 0.020
 
 private fun Double.pow(exponent: Double): Double = Math.pow(this, exponent)
